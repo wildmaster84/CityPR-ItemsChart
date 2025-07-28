@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Commodity Price Viewer - Dark Mode</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* Dark theme and layout */
+    body {
+      display: flex;
+      height: 100vh;
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+    #sidebar {
+      width: 90%;
+      border-right: 1px solid #333;
+      padding: 15px 20px;
+      background: #1e1e1e;
+      box-shadow: 2px 0 5px rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+    }
+    #sidebar h2 {
+      margin-top: 0;
+      font-weight: 700;
+      letter-spacing: 1.1px;
+      color: #80cbc4;
+    }
+    #searchInput {
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      border: none;
+      border-radius: 6px;
+      background-color: #333;
+      color: #eee;
+      font-size: 16px;
+      outline: none;
+      transition: background-color 0.2s ease;
+    }
+    #searchInput::placeholder {
+      color: #999;
+    }
+    #searchInput:focus {
+      background-color: #444;
+    }
+    #sortBtn {
+      padding: 8px 12px;
+      margin-bottom: 15px;
+      border: none;
+      border-radius: 6px;
+      background-color: #555;
+      color: #eee;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+      user-select: none;
+    }
+    #sortBtn:hover {
+      background-color: #80cbc4;
+      color: #121212;
+    }
+    #items {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      overflow-y: auto;
+      flex: 1;
+    }
+    #items li {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid #333;
+      cursor: default;
+      transition: background-color 0.2s ease;
+    }
+    #items li:hover {
+      background-color: #333;
+    }
+    #items li .item-name {
+      flex-shrink: 0;
+      width: 140px;
+      font-weight: 600;
+      user-select: none;
+      color: #b2dfdb;
+    }
+    #items li canvas {
+      flex: 1;
+      height: 200px !important;   /* taller graphs */
+      min-width: 280px;            /* wider graphs */
+      max-width: 100%;
+      background-color: #1e1e1e;
+      border-radius: 4px;
+      box-shadow: inset 0 0 5px rgba(0,0,0,0.5);
+    }
+    /* Scrollbar styling for dark theme */
+    #sidebar::-webkit-scrollbar {
+      width: 8px;
+    }
+    #sidebar::-webkit-scrollbar-thumb {
+      background-color: #555;
+      border-radius: 4px;
+    }
+    #sidebar::-webkit-scrollbar-thumb:hover {
+      background-color: #80cbc4;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Items & Mini Graphs</h2>
+    <input type="text" id="searchInput" placeholder="Search items..." aria-label="Search items" />
+    <button id="sortBtn">Sort by: Name ↑</button>
+    <ul id="items"></ul>
+  </div>
+
+	<script>
+	  const itemsList = document.getElementById('items');
+	  const searchInput = document.getElementById('searchInput');
+	  const sortBtn = document.getElementById('sortBtn');
+
+	  const listItems = []; // Each item: { li, name, prices, chartRendered }
+
+	  let sortBy = 'name'; // or 'price'
+	  let sortAsc = true;
+	  let dates = [];
+
+	  async function loadData() {
+		const res = await fetch('/api/data');
+		const dataByDate = await res.json();
+		dates = Object.keys(dataByDate).sort();
+		const itemsMap = {};
+
+		for (const date of dates) {
+		  for (const item of dataByDate[date]) {
+			if (!itemsMap[item.name]) {
+			  itemsMap[item.name] = Array(dates.length).fill(null);
+			}
+			const dateIndex = dates.indexOf(date);
+			itemsMap[item.name][dateIndex] = item.currentBuyPrice ?? null;
+		  }
+		}
+
+		itemsList.innerHTML = '';
+		listItems.length = 0;
+
+		for (const [itemName, prices] of Object.entries(itemsMap)) {
+		  const li = document.createElement('li');
+		  const nameSpan = document.createElement('span');
+		  nameSpan.textContent = itemName;
+		  nameSpan.classList.add('item-name');
+
+		  const canvas = document.createElement('canvas');
+		  canvas.height = 200;
+
+		  li.appendChild(nameSpan);
+		  li.appendChild(canvas);
+		  itemsList.appendChild(li);
+
+		  listItems.push({
+			li,
+			name: itemName.toLowerCase(),
+			prices,
+			canvas,
+			chart: null,
+			chartRendered: false
+		  });
+		}
+
+		filterAndRender(); // initial
+	  }
+
+	  function getLatestPrice(prices) {
+		for (let i = prices.length - 1; i >= 0; i--) {
+		  if (prices[i] != null) return prices[i];
+		}
+		return null;
+	  }
+
+	  function sortListItems() {
+		if (sortBy === 'name') {
+		  listItems.sort((a, b) => sortAsc
+			? a.name.localeCompare(b.name)
+			: b.name.localeCompare(a.name));
+		} else if (sortBy === 'price') {
+		  listItems.sort((a, b) => {
+			const aPrice = getLatestPrice(a.prices);
+			const bPrice = getLatestPrice(b.prices);
+			if (aPrice == null && bPrice == null) return 0;
+			if (aPrice == null) return sortAsc ? 1 : -1;
+			if (bPrice == null) return sortAsc ? -1 : 1;
+			return sortAsc ? aPrice - bPrice : bPrice - aPrice;
+		  });
+		}
+	  }
+
+	  function renderChartIfNeeded(item) {
+		if (item.chartRendered) return;
+		const ctx = item.canvas.getContext('2d');
+		item.chart = new Chart(ctx, {
+		  type: 'line',
+		  data: {
+			labels: dates,
+			datasets: [{
+			  data: item.prices,
+			  borderColor: 'rgba(75, 192, 192, 1)',
+			  backgroundColor: 'rgba(75, 192, 192, 0.3)',
+			  fill: true,
+			  tension: 0.3,
+			  pointRadius: 3,
+			  pointHoverRadius: 5
+			}]
+		  },
+		  options: {
+			responsive: true,
+			maintainAspectRatio: false,
+			interaction: { intersect: false, mode: 'nearest' },
+			scales: {
+			  x: { display: false },
+			  y: { display: false }
+			},
+			plugins: {
+			  legend: { display: false },
+			  tooltip: { enabled: true }
+			},
+			elements: {
+			  line: { borderWidth: 1 }
+			}
+		  }
+		});
+		item.chartRendered = true;
+	  }
+
+	  function renderListItems() {
+		itemsList.innerHTML = '';
+		listItems.forEach(item => {
+		  itemsList.appendChild(item.li);
+		});
+	  }
+
+	  function filterAndRender() {
+		const term = searchInput.value.trim().toLowerCase();
+		listItems.forEach(item => {
+		  const match = item.name.includes(term);
+		  item.li.style.display = match ? '' : 'none';
+		  if (match) renderChartIfNeeded(item);
+		});
+		renderListItems();
+	  }
+
+	  function toggleSort() {
+		if (sortBy === 'name') {
+		  sortBy = 'price';
+		  sortAsc = false;
+		  sortBtn.textContent = 'Sort by: Price ↓';
+		} else {
+		  sortBy = 'name';
+		  sortAsc = true;
+		  sortBtn.textContent = 'Sort by: Name ↑';
+		}
+		sortListItems();
+		filterAndRender();
+	  }
+
+	  // Debounce utility
+	  function debounce(fn, delay) {
+		let timer;
+		return (...args) => {
+		  clearTimeout(timer);
+		  timer = setTimeout(() => fn.apply(this, args), delay);
+		};
+	  }
+
+	  const debouncedFilter = debounce(filterAndRender, 150);
+
+	  searchInput.addEventListener('input', debouncedFilter);
+	  sortBtn.addEventListener('click', toggleSort);
+
+	  loadData();
+	</script>
+
+</body>
+</html>
